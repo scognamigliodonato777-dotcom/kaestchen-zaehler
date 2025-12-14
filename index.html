@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kästchen-Zähler</title>
+  <style>
+    body{font-family:system-ui; padding:16px; max-width:700px; margin:auto;}
+    button{padding:10px 14px; font-size:16px;}
+    #out{white-space:pre-wrap; background:#f4f4f4; padding:12px; border-radius:10px;}
+    canvas{max-width:100%; border-radius:10px; margin-top:10px; display:none;}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+  </style>
+</head>
+<body>
+  <h2>Kästchen-Zähler (Foto → Rot/Grün zählen)</h2>
+
+  <div class="row">
+    <input id="photo" type="file" accept="image/*" capture="environment">
+    <button id="run">Auswerten</button>
+  </div>
+
+  <p id="out">1) Foto wählen/aufnehmen → 2) “Auswerten” drücken</p>
+  <canvas id="cv"></canvas>
+
+<script>
+const out = document.getElementById("out");
+const canvas = document.getElementById("cv");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+function rgbToHsv(r,g,b){
+  r/=255; g/=255; b/=255;
+  const max=Math.max(r,g,b), min=Math.min(r,g,b);
+  const d=max-min;
+  let h=0;
+  if(d!==0){
+    if(max===r) h=((g-b)/d)%6;
+    else if(max===g) h=(b-r)/d+2;
+    else h=(r-g)/d+4;
+    h=Math.round(h*60);
+    if(h<0) h+=360;
+  }
+  const s = max===0 ? 0 : d/max;
+  const v = max;
+  return [h, s*255, v*255]; // H in Grad, S/V wie OpenCV 0..255
+}
+
+// einfache Connected-Components (8-neighbour) auf Binärbild
+function countBlobs(mask, w, h){
+  const visited = new Uint8Array(w*h);
+  const idx = (x,y)=>y*w+x;
+
+  let count = 0;
+
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const i = idx(x,y);
+      if(mask[i]===0 || visited[i]) continue;
+
+      // BFS/Stack
+      let minx=x, maxx=x, miny=y, maxy=y, area=0;
+      const stack = [i];
+      visited[i]=1;
+
+      while(stack.length){
+        const cur = stack.pop();
+        area++;
+        const cx = cur % w;
+        const cy = (cur / w) | 0;
+        if(cx<minx) minx=cx; if(cx>maxx) maxx=cx;
+        if(cy<miny) miny=cy; if(cy>maxy) maxy=cy;
+
+        for(let ny=cy-1; ny<=cy+1; ny++){
+          if(ny<0||ny>=h) continue;
+          for(let nx=cx-1; nx<=cx+1; nx++){
+            if(nx<0||nx>=w) continue;
+            const ni = idx(nx,ny);
+            if(mask[ni] && !visited[ni]){
+              visited[ni]=1;
+              stack.push(ni);
+            }
+          }
+        }
+      }
+
+      const bw = (maxx-minx+1);
+      const bh = (maxy-miny+1);
+
+      // Filter: Kästchen-typische Grösse & quadratisch
+      // (kann bei anderen Fotos evtl. leicht angepasst werden)
+      const areaMin = 120;     // zu klein = Text/Noise
+      const areaMax = 8000;    // zu gross = grosse Flächen/Timer
+      if(area < areaMin || area > areaMax) continue;
+
+      const aspect = bw / bh;
+      const aspectTol = 0.45;  // 1 +/- tol
+      if(!(aspect > (1-aspectTol) && aspect < (1+aspectTol))) continue;
+
+      // Füllgrad: Kästchen sind “voll”, Text eher dünn
+      const fill = area / (bw*bh);
+      if(fill < 0.35) continue;
+
+      count++;
+    }
+  }
+  return count;
+}
+
+async function loadImageToCanvas(file){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    img.onload = ()=>resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+document.getElementById("run").onclick = async ()=>{
+  const file = document.getElementById("photo").files[0];
+  if(!file){ out.textContent="Bitte zuerst ein Foto auswählen."; return; }
+
+  out.textContent = "Analysiere…";
+
+  const img = await loadImageToCanvas(file);
+
+  // downscale für Speed (zählt trotzdem zuverlässig)
+  const maxW = 700;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.round(img.width * scale);
+  const h = Math.round(img.height * scale);
+
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+  canvas.style.display = "block";
+
+  const data = ctx.getImageData(0,0,w,h).data;
+
+  const redMask = new Uint8Array(w*h);
+  const greenMask = new Uint8Array(w*h);
+
+  for(let p=0, i=0; p<data.length; p+=4, i++){
+    const r=data[p], g=data[p+1], b=data[p+2];
+    const [H,S,V] = rgbToHsv(r,g,b);
+
+    // Schwellen ähnlich wie OpenCV-Variante:
+    // Grün: H 35..95, S>=80, V>=70
+    if(H>=35 && H<=95 && S>=80 && V>=70) greenMask[i]=1;
+
+    // Rot: H 0..10 oder 350..360, S>=80, V>=70
+    if(((H>=0 && H<=10) || (H>=350 && H<=360)) && S>=80 && V>=70) redMask[i]=1;
+  }
+
+  const red = countBlobs(redMask, w, h);
+  const green = countBlobs(greenMask, w, h);
+
+  out.textContent = `Resultat:\n🔴 Rot: ${red}\n🟢 Grün: ${green}\n\nTipp: Wenn es bei anderen Fotos daneben ist:\n- näher ran / weniger schräg fotografieren\n- gutes Licht / kein Spiegeln`;
+};
+</script>
+</body>
+</html>
