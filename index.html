@@ -12,7 +12,6 @@
     .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
     .small{font-size:12px; opacity:.75;}
   </style>
-
   <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
@@ -35,129 +34,114 @@ const fileInput = document.getElementById("photo");
 const canvas = document.getElementById("cv");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-function median(arr){
-  if(!arr.length) return null;
-  const a = arr.slice().sort((x,y)=>x-y);
-  const m = (a.length/2)|0;
-  return a.length%2 ? a[m] : (a[m-1]+a[m])/2;
+function loadImageFromFile(file){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden (onerror)."));
+    img.src = URL.createObjectURL(file);
+  });
 }
 
-function morphClean(bin /* 8U */) {
+function morphClean(bin) {
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3,3));
   const tmp = new cv.Mat();
-  const out = new cv.Mat();
+  const outm = new cv.Mat();
   cv.morphologyEx(bin, tmp, cv.MORPH_OPEN, kernel, new cv.Point(-1,-1), 1);
-  cv.morphologyEx(tmp, out, cv.MORPH_CLOSE, kernel, new cv.Point(-1,-1), 2);
+  cv.morphologyEx(tmp, outm, cv.MORPH_CLOSE, kernel, new cv.Point(-1,-1), 2);
   tmp.delete(); kernel.delete();
-  return out;
+  return outm;
 }
 
-function countSquaresAuto(mask /* 8U */) {
+function countSquares(mask) {
   const labels = new cv.Mat();
   const stats  = new cv.Mat();
   const cent   = new cv.Mat();
   const n = cv.connectedComponentsWithStats(mask, labels, stats, cent, 8, cv.CV_32S);
 
-  // 1) Grobe Kandidaten sammeln + typische Kästchenfläche schätzen
-  const candidateAreas = [];
-  const candidates = [];
-
+  let count = 0;
   for (let i = 1; i < n; i++) {
     const w = stats.intAt(i, cv.CC_STAT_WIDTH);
     const h = stats.intAt(i, cv.CC_STAT_HEIGHT);
     const area = stats.intAt(i, cv.CC_STAT_AREA);
 
-    if (area < 40) continue;              // zu klein = Noise
+    // etwas toleranter (weil Downsizing/Handy)
+    if (area < 120 || area > 20000) continue;
+
     const aspect = w / h;
-    if (aspect < 0.6 || aspect > 1.6) continue;
+    if (aspect < 0.65 || aspect > 1.55) continue;
 
     const fill = area / (w * h);
-    if (fill < 0.25) continue;            // Text ist dünn
-
-    candidates.push({w,h,area,fill});
-    candidateAreas.push(area);
-  }
-
-  const medArea = median(candidateAreas); // typische Kästchenfläche
-  if (!medArea) {
-    labels.delete(); stats.delete(); cent.delete();
-    return {count: 0, medArea: null};
-  }
-
-  // 2) Final zählen: nur Komponenten in einem Bereich um medArea
-  //    (verhindert Timer/Text und zu große “Klumpen”)
-  const minArea = medArea * 0.45;
-  const maxArea = medArea * 2.5;
-
-  let count = 0;
-  for (const c of candidates) {
-    if (c.area < minArea || c.area > maxArea) continue;
-
-    // etwas strenger: Kästchen sind recht “voll”
-    if (c.fill < 0.32) continue;
+    if (fill < 0.30) continue;
 
     count++;
   }
 
   labels.delete(); stats.delete(); cent.delete();
-  return {count, medArea};
+  return count;
 }
 
-async function run() {
-  const f = fileInput.files[0];
-  if (!f) { out.textContent = "Bitte zuerst ein Foto auswählen."; return; }
+async function run(){
+  try {
+    const f = fileInput.files[0];
+    if (!f) { out.textContent = "Bitte zuerst ein Foto auswählen."; return; }
 
-  out.textContent = "Analysiere…";
+    out.textContent = "Analysiere…";
 
-  const img = new Image();
-  img.src = URL.createObjectURL(f);
-  await img.decode();
+    // iPhone-sicheres Laden
+    const img = await loadImageFromFile(f);
 
-  const maxW = 1100;
-  const scale = Math.min(1, maxW / img.width);
-  const w = Math.round(img.width * scale);
-  const h = Math.round(img.height * scale);
+    // kleiner skalieren (damit es am iPhone nicht hängt)
+    const maxW = 700;
+    const scale = Math.min(1, maxW / img.width);
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
 
-  canvas.width = w; canvas.height = h;
-  ctx.drawImage(img, 0, 0, w, h);
-  canvas.style.display = "block";
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+    canvas.style.display = "block";
 
-  const imageData = ctx.getImageData(0,0,w,h);
-  const srcRGBA = cv.matFromImageData(imageData);
+    // Canvas -> Mat
+    const imageData = ctx.getImageData(0,0,w,h);
+    const srcRGBA = cv.matFromImageData(imageData);
 
-  const bgr = new cv.Mat();
-  cv.cvtColor(srcRGBA, bgr, cv.COLOR_RGBA2BGR);
+    const bgr = new cv.Mat();
+    cv.cvtColor(srcRGBA, bgr, cv.COLOR_RGBA2BGR);
 
-  const hsv = new cv.Mat();
-  cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
+    const hsv = new cv.Mat();
+    cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
 
-  // Schwellen bewusst etwas toleranter als “Lehrbuch”
-  const green = new cv.Mat();
-  cv.inRange(hsv, new cv.Scalar(30, 40, 40, 0), new cv.Scalar(110, 255, 255, 255), green);
+    // Grün (etwas breiter)
+    const green = new cv.Mat();
+    cv.inRange(hsv, new cv.Scalar(30, 40, 40, 0), new cv.Scalar(110, 255, 255, 255), green);
 
-  const red1 = new cv.Mat(), red2 = new cv.Mat(), red = new cv.Mat();
-  cv.inRange(hsv, new cv.Scalar(0, 40, 40, 0),   new cv.Scalar(15, 255, 255, 255), red1);
-  cv.inRange(hsv, new cv.Scalar(165, 40, 40, 0), new cv.Scalar(179, 255, 255, 255), red2);
-  cv.bitwise_or(red1, red2, red);
+    // Rot (wrap, etwas breiter)
+    const red1 = new cv.Mat(), red2 = new cv.Mat(), red = new cv.Mat();
+    cv.inRange(hsv, new cv.Scalar(0, 40, 40, 0),   new cv.Scalar(15, 255, 255, 255), red1);
+    cv.inRange(hsv, new cv.Scalar(165, 40, 40, 0), new cv.Scalar(179, 255, 255, 255), red2);
+    cv.bitwise_or(red1, red2, red);
 
-  const greenClean = morphClean(green);
-  const redClean   = morphClean(red);
+    const greenClean = morphClean(green);
+    const redClean   = morphClean(red);
 
-  const g = countSquaresAuto(greenClean);
-  const r = countSquaresAuto(redClean);
+    const r = countSquares(redClean);
+    const g = countSquares(greenClean);
 
-  out.textContent =
-    `Resultat:\n🔴 Rot: ${r.count}\n🟢 Grün: ${g.count}\n\nDebug (medArea): rot=${r.medArea?.toFixed(0) ?? "n/a"}  grün=${g.medArea?.toFixed(0) ?? "n/a"}`;
+    out.textContent = `Resultat:\n🔴 Rot: ${r}\n🟢 Grün: ${g}`;
 
-  // cleanup
-  srcRGBA.delete(); bgr.delete(); hsv.delete();
-  green.delete(); red1.delete(); red2.delete(); red.delete();
-  greenClean.delete(); redClean.delete();
+    // cleanup
+    srcRGBA.delete(); bgr.delete(); hsv.delete();
+    green.delete(); red1.delete(); red2.delete(); red.delete();
+    greenClean.delete(); redClean.delete();
+
+  } catch (e) {
+    out.textContent = "Fehler:\n" + (e && e.message ? e.message : String(e));
+  }
 }
 
 function waitForReady(){
   const tick = () => {
-    if (window.cv && cv.Mat && cv.connectedComponentsWithStats) {
+    if (window.cv && cv.Mat && cv.inRange) {
       statusEl.textContent = "OpenCV bereit ✅";
       runBtn.disabled = false;
       runBtn.onclick = run;
@@ -167,7 +151,6 @@ function waitForReady(){
   };
   tick();
 }
-
 waitForReady();
 </script>
 </body>
