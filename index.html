@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Kästchen-Zähler (OpenCV)</title>
+  <title>Kästchen-Zähler (OpenCV final)</title>
   <style>
     body{font-family:system-ui; padding:16px; max-width:760px; margin:auto;}
     button{padding:10px 14px; font-size:16px;}
@@ -15,7 +15,7 @@
   <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
-  <h2>Kästchen-Zähler (Foto → Rot/Grün zählen)</h2>
+  <h2>Kästchen-Zähler</h2>
 
   <div class="row">
     <input id="photo" type="file" accept="image/*" capture="environment" />
@@ -24,26 +24,19 @@
 
   <p class="small" id="status">OpenCV lädt…</p>
   <pre id="out">Foto wählen → Auswerten</pre>
+
+  <img id="img" style="display:none" alt="input" />
   <canvas id="cv"></canvas>
 
 <script>
-const out = document.getElementById("out");
 const statusEl = document.getElementById("status");
+const out = document.getElementById("out");
 const runBtn = document.getElementById("run");
 const fileInput = document.getElementById("photo");
+const imgEl = document.getElementById("img");
 const canvas = document.getElementById("cv");
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-function loadImageFromFile(file){
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden (onerror)."));
-    img.src = URL.createObjectURL(file);
-  });
-}
-
-function morphClean(bin) {
+function morphClean(bin /* 8U */) {
   const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3,3));
   const tmp = new cv.Mat();
   const outm = new cv.Mat();
@@ -53,10 +46,11 @@ function morphClean(bin) {
   return outm;
 }
 
-function countSquares(mask) {
+function countSquares(mask /* 8U */) {
   const labels = new cv.Mat();
   const stats  = new cv.Mat();
   const cent   = new cv.Mat();
+
   const n = cv.connectedComponentsWithStats(mask, labels, stats, cent, 8, cv.CV_32S);
 
   let count = 0;
@@ -65,8 +59,8 @@ function countSquares(mask) {
     const h = stats.intAt(i, cv.CC_STAT_HEIGHT);
     const area = stats.intAt(i, cv.CC_STAT_AREA);
 
-    // etwas toleranter (weil Downsizing/Handy)
-    if (area < 120 || area > 20000) continue;
+    // robustere Filter (nicht zu eng, damit iPhone/PNG klappt)
+    if (area < 120 || area > 25000) continue;
 
     const aspect = w / h;
     if (aspect < 0.65 || aspect > 1.55) continue;
@@ -81,6 +75,15 @@ function countSquares(mask) {
   return count;
 }
 
+function loadFileToImg(file){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    imgEl.onload = () => { URL.revokeObjectURL(url); resolve(); };
+    imgEl.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Bild konnte nicht geladen werden.")); };
+    imgEl.src = url;
+  });
+}
+
 async function run(){
   try {
     const f = fileInput.files[0];
@@ -88,34 +91,38 @@ async function run(){
 
     out.textContent = "Analysiere…";
 
-    // iPhone-sicheres Laden
-    const img = await loadImageFromFile(f);
+    // iPhone-sicher laden
+    await loadFileToImg(f);
 
-    // kleiner skalieren (damit es am iPhone nicht hängt)
+    // OpenCV liest direkt aus <img>
+    let src = cv.imread(imgEl); // RGBA
+    // kleiner skalieren, damit Safari nicht hängen bleibt
     const maxW = 700;
-    const scale = Math.min(1, maxW / img.width);
-    const w = Math.round(img.width * scale);
-    const h = Math.round(img.height * scale);
+    if (src.cols > maxW) {
+      const scale = maxW / src.cols;
+      const dsize = new cv.Size(Math.round(src.cols * scale), Math.round(src.rows * scale));
+      const resized = new cv.Mat();
+      cv.resize(src, resized, dsize, 0, 0, cv.INTER_AREA);
+      src.delete();
+      src = resized;
+    }
 
-    canvas.width = w; canvas.height = h;
-    ctx.drawImage(img, 0, 0, w, h);
+    // Für Anzeige (optional)
     canvas.style.display = "block";
-
-    // Canvas -> Mat
-    const imageData = ctx.getImageData(0,0,w,h);
-    const srcRGBA = cv.matFromImageData(imageData);
+    cv.imshow(canvas, src);
 
     const bgr = new cv.Mat();
-    cv.cvtColor(srcRGBA, bgr, cv.COLOR_RGBA2BGR);
+    cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
 
     const hsv = new cv.Mat();
     cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
 
-    // Grün (etwas breiter)
+    // HSV: H 0..179, S/V 0..255
+    // Grün (toleranter)
     const green = new cv.Mat();
     cv.inRange(hsv, new cv.Scalar(30, 40, 40, 0), new cv.Scalar(110, 255, 255, 255), green);
 
-    // Rot (wrap, etwas breiter)
+    // Rot (wrap, toleranter)
     const red1 = new cv.Mat(), red2 = new cv.Mat(), red = new cv.Mat();
     cv.inRange(hsv, new cv.Scalar(0, 40, 40, 0),   new cv.Scalar(15, 255, 255, 255), red1);
     cv.inRange(hsv, new cv.Scalar(165, 40, 40, 0), new cv.Scalar(179, 255, 255, 255), red2);
@@ -130,7 +137,7 @@ async function run(){
     out.textContent = `Resultat:\n🔴 Rot: ${r}\n🟢 Grün: ${g}`;
 
     // cleanup
-    srcRGBA.delete(); bgr.delete(); hsv.delete();
+    src.delete(); bgr.delete(); hsv.delete();
     green.delete(); red1.delete(); red2.delete(); red.delete();
     greenClean.delete(); redClean.delete();
 
@@ -139,19 +146,13 @@ async function run(){
   }
 }
 
-function waitForReady(){
-  const tick = () => {
-    if (window.cv && cv.Mat && cv.inRange) {
-      statusEl.textContent = "OpenCV bereit ✅";
-      runBtn.disabled = false;
-      runBtn.onclick = run;
-      return;
-    }
-    setTimeout(tick, 50);
-  };
-  tick();
-}
-waitForReady();
+// WICHTIG: korrekt auf OpenCV warten
+window.cv = window.cv || {};
+cv.onRuntimeInitialized = () => {
+  statusEl.textContent = "OpenCV bereit ✅";
+  runBtn.disabled = false;
+  runBtn.onclick = run;
+};
 </script>
 </body>
 </html>
