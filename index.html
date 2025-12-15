@@ -85,6 +85,8 @@ function countBlobs(mask, w, h){
 
       const bw = (maxx-minx+1);
       const bh = (maxy-miny+1);
+// Kästchen haben in der verkleinerten Darstellung eine typische Größe
+if (bw < 10 || bw > 45 || bh < 10 || bh > 45) continue;
 
       // Filter: Kästchen-typische Grösse & quadratisch
       // (kann bei anderen Fotos evtl. leicht angepasst werden)
@@ -148,7 +150,7 @@ document.getElementById("run").onclick = async ()=>{
  if(H>=35 && H<=160 && S>=45 && V>=45) greenMask[i]=1;
 
  // Rot: toleranter + Zusatzregel "Rot-dominiert"
-const redHSV = (((H>=0 && H<=22) || (H>=338 && H<=360)) && S>=35 && V>=35);
+const redHSV = (((H>=0 && H<=25) || (H>=335 && H<=360)) && S>=20 && V>=20);
 const redRGB = (r > 90 && r > g + 30 && r > b + 30); // hilft bei dunklem Rot
 
 if (redHSV || redRGB) redMask[i] = 1;
