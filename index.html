@@ -1,104 +1,74 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Kästchen-Zähler</title>
   <style>
-    body{font-family:system-ui; padding:16px; max-width:720px; margin:auto;}
-    button{padding:10px 14px; font-size:16px;}
-    #out{white-space:pre-wrap; background:#f4f4f4; padding:12px; border-radius:10px;}
-    canvas{max-width:100%; border-radius:10px; margin-top:10px; display:none;}
-    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+    body { font-family: system-ui; padding: 16px; max-width: 720px; margin: auto; }
+    button { padding: 10px 14px; font-size: 16px; }
+    #out { background: #f4f4f4; padding: 12px; border-radius: 10px; white-space: pre-line; }
+    canvas { max-width: 100%; margin-top: 10px; display: none; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
-  <h2>Kästchen-Zähler (Foto → Rot/Grün zählen)</h2>
 
-  <div class="row">
-    <input id="photo" type="file" accept="image/*" capture="environment">
-    <button id="run">Auswerten</button>
-  </div>
+<h2>Kästchen-Zähler</h2>
 
-  <p id="out">1) Foto wählen/aufnehmen → 2) “Auswerten” drücken</p>
-  <canvas id="cv"></canvas>
+<div class="row">
+  <input id="photo" type="file" accept="image/*" capture="environment">
+  <button onclick="run()">Auswerten</button>
+</div>
+
+<p id="out">Foto wählen → Auswerten</p>
+<canvas id="cv"></canvas>
 
 <script>
-const out = document.getElementById("out");
 const canvas = document.getElementById("cv");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const out = document.getElementById("out");
 
 function rgbToHsv(r,g,b){
   r/=255; g/=255; b/=255;
   const max=Math.max(r,g,b), min=Math.min(r,g,b);
   const d=max-min;
   let h=0;
-  if(d!==0){
+  if(d){
     if(max===r) h=((g-b)/d)%6;
     else if(max===g) h=(b-r)/d+2;
     else h=(r-g)/d+4;
     h*=60; if(h<0) h+=360;
   }
-  const s = max===0 ? 0 : d/max;
-  const v = max;
-  return [h, s*255, v*255]; // H in Grad, S/V 0..255
+  const s = max ? d/max : 0;
+  return [h, s*255, max*255];
 }
 
-// 3x3 "majority" Filter als einfache Morphologie (stabil bei Handy-Fotos)
-function majority3x3(mask, w, h, threshold){ // threshold: z.B. 5
-  const out = new Uint8Array(w*h);
-  const idx=(x,y)=>y*w+x;
-  for(let y=0;y<h;y++){
-    for(let x=0;x<w;x++){
-      let sum=0;
-      for(let ny=y-1; ny<=y+1; ny++){
-        if(ny<0||ny>=h) continue;
-        for(let nx=x-1; nx<=x+1; nx++){
-          if(nx<0||nx>=w) continue;
-          sum += mask[idx(nx,ny)];
-        }
-      }
-      out[idx(x,y)] = (sum>=threshold) ? 1 : 0;
-    }
-  }
-  return out;
-}
-
-function smoothMask(mask, w, h){
-  // open-ish then close-ish
-  let m = majority3x3(mask, w, h, 6); // entfernt dünnes Rauschen
-  m = majority3x3(m, w, h, 4);        // füllt kleine Löcher
-  return m;
-}
-
-// Connected Components: sammelt Komponenten-Daten
-function collectComponents(mask, w, h){
+function countSquares(mask, w, h){
   const visited = new Uint8Array(w*h);
+  let count = 0;
+
   const idx=(x,y)=>y*w+x;
-  const comps = [];
 
   for(let y=0;y<h;y++){
     for(let x=0;x<w;x++){
       const i = idx(x,y);
-      if(mask[i]===0 || visited[i]) continue;
+      if(!mask[i] || visited[i]) continue;
 
-      let minx=x, maxx=x, miny=y, maxy=y, area=0;
+      let area=0, minx=x, maxx=x, miny=y, maxy=y;
       const stack=[i];
       visited[i]=1;
 
       while(stack.length){
-        const cur=stack.pop();
+        const p = stack.pop();
         area++;
-        const cx = cur % w;
-        const cy = (cur / w) | 0;
+        const px=p%w, py=(p/w)|0;
+        minx=Math.min(minx,px); maxx=Math.max(maxx,px);
+        miny=Math.min(miny,py); maxy=Math.max(maxy,py);
 
-        if(cx<minx) minx=cx; if(cx>maxx) maxx=cx;
-        if(cy<miny) miny=cy; if(cy>maxy) maxy=cy;
-
-        for(let ny=cy-1; ny<=cy+1; ny++){
-          if(ny<0||ny>=h) continue;
-          for(let nx=cx-1; nx<=cx+1; nx++){
-            if(nx<0||nx>=w) continue;
+        for(let ny=py-1;ny<=py+1;ny++){
+          for(let nx=px-1;nx<=px+1;nx++){
+            if(nx<0||ny<0||nx>=w||ny>=h) continue;
             const ni=idx(nx,ny);
             if(mask[ni] && !visited[ni]){
               visited[ni]=1;
@@ -108,110 +78,60 @@ function collectComponents(mask, w, h){
         }
       }
 
-      const bw = (maxx-minx+1);
-      const bh = (maxy-miny+1);
-      const fill = area / (bw*bh);
+      const bw=maxx-minx+1, bh=maxy-miny+1;
+      const aspect=bw/bh;
+      const fill=area/(bw*bh);
 
-      comps.push({minx,miny,maxx,maxy,bw,bh,area,fill});
+      if(area<120) continue;
+      if(aspect<0.7||aspect>1.4) continue;
+      if(fill<0.45) continue;
+
+      count++;
     }
   }
-  return comps;
+  return count;
 }
 
-function median(arr){
-  if(arr.length===0) return null;
-  const a = [...arr].sort((x,y)=>x-y);
-  const mid = Math.floor(a.length/2);
-  return a.length%2 ? a[mid] : (a[mid-1]+a[mid])/2;
-}
+async function run(){
+  const file=document.getElementById("photo").files[0];
+  if(!file){ out.textContent="Bitte Foto auswählen."; return; }
 
-function countSquaresAuto(comps, refSize){
-  // Grundfilter (sehr grob)
-  let candidates = comps.filter(c => {
-    const aspect = c.bw / c.bh;
-    if(aspect < 0.65 || aspect > 1.55) return false;
-    if(c.fill < 0.25) return false;
-    if(c.area < 80) return false;      // klein = Text/Noise
-    return true;
-  });
+  const img=new Image();
+  img.src=URL.createObjectURL(file);
+  await img.decode();
 
-  // Wenn wir eine Referenzgröße haben: nur Größen um diese herum zulassen
-  if(refSize){
-    const minS = refSize * 0.55;
-    const maxS = refSize * 1.85;
-    candidates = candidates.filter(c => {
-      const s = (c.bw + c.bh) / 2;
-      return s >= minS && s <= maxS;
-    });
-  }
-
-  return candidates.length;
-}
-
-async function loadImageToCanvas(file){
-  return new Promise((resolve,reject)=>{
-    const img = new Image();
-    img.onload=()=>resolve(img);
-    img.onerror=reject;
-    img.src=URL.createObjectURL(file);
-  });
-}
-
-document.getElementById("run").onclick = async ()=>{
-  const file = document.getElementById("photo").files[0];
-  if(!file){ out.textContent="Bitte zuerst ein Foto auswählen."; return; }
-
-  out.textContent="Analysiere…";
-
-  const img = await loadImageToCanvas(file);
-
-  // Downscale für Geschwindigkeit
-  const maxW = 900;
-  const scale = Math.min(1, maxW / img.width);
-  const w = Math.round(img.width * scale);
-  const h = Math.round(img.height * scale);
+  const scale=Math.min(1, 900/img.width);
+  const w=Math.round(img.width*scale);
+  const h=Math.round(img.height*scale);
 
   canvas.width=w; canvas.height=h;
-  ctx.drawImage(img, 0, 0, w, h);
+  ctx.drawImage(img,0,0,w,h);
   canvas.style.display="block";
 
-  const data = ctx.getImageData(0,0,w,h).data;
+  const data=ctx.getImageData(0,0,w,h).data;
+  const red=new Uint8Array(w*h);
+  const green=new Uint8Array(w*h);
 
-  const redMask = new Uint8Array(w*h);
-  const greenMask = new Uint8Array(w*h);
-
-  for(let p=0,i=0; p<data.length; p+=4, i++){
+  for(let p=0,i=0;p<data.length;p+=4,i++){
     const r=data[p], g=data[p+1], b=data[p+2];
-    const [H,S,V] = rgbToHsv(r,g,b);
+    const [H,S,V]=rgbToHsv(r,g,b);
 
-    // Grün: bewusst breit (Handy/PNG)
-    if(H>=30 && H<=170 && S>=35 && V>=35) greenMask[i]=1;
+    if(H>=35 && H<=160 && S>=40 && V>=40) green[i]=1;
 
-    // Rot: HSV + RGB-Regel (hilft bei dunklem Rot)
-    const redHSV = (((H>=0 && H<=28) || (H>=332 && H<=360)) && S>=25 && V>=25);
-    const redRGB = (r > 85 && r > g + 25 && r > b + 25);
-    if(redHSV || redRGB) redMask[i]=1;
+    const redHSV=((H<=25||H>=335)&&S>=25&&V>=25);
+    const redRGB=(r>100&&r>g+30&&r>b+30);
+    if(redHSV||redRGB) red[i]=1;
   }
 
-  // Masken glätten (wie Morphologie light)
-  const g2 = smoothMask(greenMask, w, h);
-  const r2 = smoothMask(redMask, w, h);
+  const redCount=countSquares(red,w,h);
+  const greenCount=countSquares(green,w,h);
 
-  const gComps = collectComponents(g2, w, h);
-  const rComps = collectComponents(r2, w, h);
-
-  // Referenz-Kästchen-Größe aus Grün (weil bei dir Grün schon stabil ist)
-  const gSizes = gComps
-    .filter(c => c.area >= 80 && c.fill >= 0.25)
-    .map(c => (c.bw + c.bh)/2);
-  const refSize = median(gSizes);
-
-  const green = countSquaresAuto(gComps, refSize);
-  const red   = countSquaresAuto(rComps, refSize);
-
-  out.textContent =
-    `Resultat:\n🔴 Rot: ${red}\n🟢 Grün: ${green}\n\n(refSize=${refSize ? refSize.toFixed(1) : "n/a"})`;
-};
+  out.textContent=
+    `Resultat:
+🔴 Rot: ${redCount}
+🟢 Grün: ${greenCount}`;
+}
 </script>
+
 </body>
 </html>
