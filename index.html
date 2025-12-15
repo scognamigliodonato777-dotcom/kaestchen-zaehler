@@ -143,12 +143,12 @@ document.getElementById("run").onclick = async ()=>{
     const r=data[p], g=data[p+1], b=data[p+2];
     const [H,S,V] = rgbToHsv(r,g,b);
 
-    // Schwellen ähnlich wie OpenCV-Variante:
-    // Grün: H 35..95, S>=80, V>=70
-    if(H>=35 && H<=95 && S>=80 && V>=70) greenMask[i]=1;
+// robustere Schwellen (PNG + iPhone Kamera)
+ // Grün ist oft gelblich/cyan -> Bereich erweitern
+ if(H>=35 && H<=160 && S>=45 && V>=45) greenMask[i]=1;
 
-    // Rot: H 0..10 oder 350..360, S>=80, V>=70
-    if(((H>=0 && H<=10) || (H>=350 && H<=360)) && S>=80 && V>=70) redMask[i]=1;
+ // Rot etwas toleranter
+ if(((H>=0 && H<=18) || (H>=342 && H<=360)) && S>=45 && V>=45) redMask[i]=1;
   }
 
   const red = countBlobs(redMask, w, h);
