@@ -147,8 +147,11 @@ document.getElementById("run").onclick = async ()=>{
  // Grün ist oft gelblich/cyan -> Bereich erweitern
  if(H>=35 && H<=160 && S>=45 && V>=45) greenMask[i]=1;
 
- // Rot etwas toleranter
- if(((H>=0 && H<=18) || (H>=342 && H<=360)) && S>=45 && V>=45) redMask[i]=1;
+ // Rot: toleranter + Zusatzregel "Rot-dominiert"
+const redHSV = (((H>=0 && H<=22) || (H>=338 && H<=360)) && S>=35 && V>=35);
+const redRGB = (r > 90 && r > g + 30 && r > b + 30); // hilft bei dunklem Rot
+
+if (redHSV || redRGB) redMask[i] = 1;
   }
 
   const red = countBlobs(redMask, w, h);
