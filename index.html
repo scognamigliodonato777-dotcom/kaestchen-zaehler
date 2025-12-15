@@ -1,137 +1,159 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kästchen-Zähler</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kästchen-Zähler (OpenCV)</title>
   <style>
-    body { font-family: system-ui; padding: 16px; max-width: 720px; margin: auto; }
-    button { padding: 10px 14px; font-size: 16px; }
-    #out { background: #f4f4f4; padding: 12px; border-radius: 10px; white-space: pre-line; }
-    canvas { max-width: 100%; margin-top: 10px; display: none; }
-    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    body{font-family:system-ui; padding:16px; max-width:760px; margin:auto;}
+    button{padding:10px 14px; font-size:16px;}
+    #out{white-space:pre-wrap; background:#f4f4f4; padding:12px; border-radius:10px;}
+    canvas{max-width:100%; border-radius:10px; margin-top:10px; display:none;}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+    .small{font-size:12px; opacity:.75;}
   </style>
+
+  <!-- OpenCV.js (WebAssembly) -->
+  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
+  <h2>Kästchen-Zähler (Foto → Rot/Grün zählen)</h2>
 
-<h2>Kästchen-Zähler</h2>
+  <div class="row">
+    <input id="photo" type="file" accept="image/*" capture="environment" />
+    <button id="run" disabled>Auswerten</button>
+  </div>
 
-<div class="row">
-  <input id="photo" type="file" accept="image/*" capture="environment">
-  <button onclick="run()">Auswerten</button>
-</div>
-
-<p id="out">Foto wählen → Auswerten</p>
-<canvas id="cv"></canvas>
+  <p class="small" id="status">OpenCV lädt… (bitte kurz warten)</p>
+  <pre id="out">Foto wählen → Auswerten</pre>
+  <canvas id="cv"></canvas>
 
 <script>
+const out = document.getElementById("out");
+const statusEl = document.getElementById("status");
+const runBtn = document.getElementById("run");
+const fileInput = document.getElementById("photo");
 const canvas = document.getElementById("cv");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
-const out = document.getElementById("out");
 
-function rgbToHsv(r,g,b){
-  r/=255; g/=255; b/=255;
-  const max=Math.max(r,g,b), min=Math.min(r,g,b);
-  const d=max-min;
-  let h=0;
-  if(d){
-    if(max===r) h=((g-b)/d)%6;
-    else if(max===g) h=(b-r)/d+2;
-    else h=(r-g)/d+4;
-    h*=60; if(h<0) h+=360;
-  }
-  const s = max ? d/max : 0;
-  return [h, s*255, max*255];
+function waitForOpenCV() {
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (window.cv && cv.Mat) return resolve();
+      setTimeout(tick, 50);
+    };
+    tick();
+  });
 }
 
-function countSquares(mask, w, h){
-  const visited = new Uint8Array(w*h);
+function countSquaresFromMask(mask /* cv.Mat 8U */) {
+  // connectedComponentsWithStats erwartet 8U (0/255)
+  const labels = new cv.Mat();
+  const stats  = new cv.Mat();
+  const cent   = new cv.Mat();
+  const n = cv.connectedComponentsWithStats(mask, labels, stats, cent, 8, cv.CV_32S);
+
   let count = 0;
+  for (let i = 1; i < n; i++) { // 0 = background
+    const x = stats.intAt(i, cv.CC_STAT_LEFT);
+    const y = stats.intAt(i, cv.CC_STAT_TOP);
+    const w = stats.intAt(i, cv.CC_STAT_WIDTH);
+    const h = stats.intAt(i, cv.CC_STAT_HEIGHT);
+    const area = stats.intAt(i, cv.CC_STAT_AREA);
 
-  const idx=(x,y)=>y*w+x;
+    // Filter wie im Python-Ansatz (robust gegen Text/Timer)
+    if (area < 250 || area > 5000) continue;
 
-  for(let y=0;y<h;y++){
-    for(let x=0;x<w;x++){
-      const i = idx(x,y);
-      if(!mask[i] || visited[i]) continue;
+    const aspect = w / h;
+    const tol = 0.35;
+    if (aspect < (1 - tol) || aspect > (1 + tol)) continue;
 
-      let area=0, minx=x, maxx=x, miny=y, maxy=y;
-      const stack=[i];
-      visited[i]=1;
+    // Füllgrad (Text ist “dünn”)
+    const fill = area / (w * h);
+    if (fill < 0.35) continue;
 
-      while(stack.length){
-        const p = stack.pop();
-        area++;
-        const px=p%w, py=(p/w)|0;
-        minx=Math.min(minx,px); maxx=Math.max(maxx,px);
-        miny=Math.min(miny,py); maxy=Math.max(maxy,py);
-
-        for(let ny=py-1;ny<=py+1;ny++){
-          for(let nx=px-1;nx<=px+1;nx++){
-            if(nx<0||ny<0||nx>=w||ny>=h) continue;
-            const ni=idx(nx,ny);
-            if(mask[ni] && !visited[ni]){
-              visited[ni]=1;
-              stack.push(ni);
-            }
-          }
-        }
-      }
-
-      const bw=maxx-minx+1, bh=maxy-miny+1;
-      const aspect=bw/bh;
-      const fill=area/(bw*bh);
-
-      if(area<120) continue;
-      if(aspect<0.7||aspect>1.4) continue;
-      if(fill<0.45) continue;
-
-      count++;
-    }
+    count++;
   }
+
+  labels.delete(); stats.delete(); cent.delete();
   return count;
 }
 
-async function run(){
-  const file=document.getElementById("photo").files[0];
-  if(!file){ out.textContent="Bitte Foto auswählen."; return; }
+function morphClean(bin /* 8U */) {
+  const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3,3));
+  const tmp = new cv.Mat();
+  const out = new cv.Mat();
+  cv.morphologyEx(bin, tmp, cv.MORPH_OPEN, kernel, new cv.Point(-1,-1), 1);
+  cv.morphologyEx(tmp, out, cv.MORPH_CLOSE, kernel, new cv.Point(-1,-1), 2);
+  tmp.delete(); kernel.delete();
+  return out;
+}
 
-  const img=new Image();
-  img.src=URL.createObjectURL(file);
+async function run() {
+  const f = fileInput.files[0];
+  if (!f) { out.textContent = "Bitte zuerst ein Foto auswählen."; return; }
+
+  out.textContent = "Analysiere…";
+
+  const img = new Image();
+  img.src = URL.createObjectURL(f);
   await img.decode();
 
-  const scale=Math.min(1, 900/img.width);
-  const w=Math.round(img.width*scale);
-  const h=Math.round(img.height*scale);
+  // Downscale für Performance, aber nicht zu klein
+  const maxW = 900;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.round(img.width * scale);
+  const h = Math.round(img.height * scale);
 
-  canvas.width=w; canvas.height=h;
-  ctx.drawImage(img,0,0,w,h);
-  canvas.style.display="block";
+  canvas.width = w; canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+  canvas.style.display = "block";
 
-  const data=ctx.getImageData(0,0,w,h).data;
-  const red=new Uint8Array(w*h);
-  const green=new Uint8Array(w*h);
+  // Canvas -> OpenCV Mat
+  const imageData = ctx.getImageData(0,0,w,h);
+  const src = cv.matFromImageData(imageData);     // RGBA
+  const bgr = new cv.Mat();
+  cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
 
-  for(let p=0,i=0;p<data.length;p+=4,i++){
-    const r=data[p], g=data[p+1], b=data[p+2];
-    const [H,S,V]=rgbToHsv(r,g,b);
+  const hsv = new cv.Mat();
+  cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
 
-    if(H>=35 && H<=160 && S>=40 && V>=40) green[i]=1;
+  // OpenCV HSV: H 0..179, S/V 0..255
+  // Grün:
+  const green = new cv.Mat();
+  cv.inRange(hsv, new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [35, 80, 70, 0]),
+                 new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [95, 255, 255, 0]), green);
 
-    const redHSV=((H<=25||H>=335)&&S>=25&&V>=25);
-    const redRGB=(r>100&&r>g+30&&r>b+30);
-    if(redHSV||redRGB) red[i]=1;
-  }
+  // Rot (wrap): [0..10] U [170..179]
+  const red1 = new cv.Mat(), red2 = new cv.Mat(), red = new cv.Mat();
+  cv.inRange(hsv, new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 80, 70, 0]),
+                 new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [10, 255, 255, 0]), red1);
+  cv.inRange(hsv, new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [170, 80, 70, 0]),
+                 new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [179, 255, 255, 0]), red2);
+  cv.bitwise_or(red1, red2, red);
 
-  const redCount=countSquares(red,w,h);
-  const greenCount=countSquares(green,w,h);
+  // Morphologie
+  const greenClean = morphClean(green);
+  const redClean   = morphClean(red);
 
-  out.textContent=
-    `Resultat:
-🔴 Rot: ${redCount}
-🟢 Grün: ${greenCount}`;
+  // Zählen
+  const redCount = countSquaresFromMask(redClean);
+  const greenCount = countSquaresFromMask(greenClean);
+
+  out.textContent = `Resultat:\n🔴 Rot: ${redCount}\n🟢 Grün: ${greenCount}`;
+
+  // cleanup
+  src.delete(); bgr.delete(); hsv.delete();
+  green.delete(); red1.delete(); red2.delete(); red.delete();
+  greenClean.delete(); redClean.delete();
 }
-</script>
 
+(async () => {
+  await waitForOpenCV();
+  statusEl.textContent = "OpenCV bereit ✅";
+  runBtn.disabled = false;
+  runBtn.onclick = run;
+})();
+</script>
 </body>
 </html>
